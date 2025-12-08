@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Layout } from './components/Layout';
-import { AuthView } from './components/Auth';
 import { 
   DashboardView, 
   ImportView, 
@@ -18,7 +17,14 @@ const generateId = () => uuidv4();
 
 const App: React.FC = () => {
   // --- State ---
-  const [user, setUser] = useState<User | null>(null);
+  // Default to a local admin user to bypass authentication
+  const [user, setUser] = useState<User | null>({
+    id: 'local_admin',
+    name: 'Administrateur',
+    email: 'admin@trypta.local',
+    role: Role.ADMIN
+  });
+  
   const [activeView, setActiveView] = useState('dashboard');
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProject, setActiveProject] = useState<Project | null>(null);
@@ -27,14 +33,6 @@ const App: React.FC = () => {
 
   // --- Persistence (Simulated Backend) ---
   
-  // Load User
-  useEffect(() => {
-    const savedUser = localStorage.getItem('trypta_user');
-    if (savedUser) {
-      setUser(JSON.parse(savedUser));
-    }
-  }, []);
-
   // Load Projects
   useEffect(() => {
     const savedProjects = localStorage.getItem('trypta_projects');
@@ -76,16 +74,12 @@ const App: React.FC = () => {
 
   // --- Actions ---
 
-  const handleLogin = (newUser: User) => {
-    setUser(newUser);
-    localStorage.setItem('trypta_user', JSON.stringify(newUser));
-  };
-
   const handleLogout = () => {
-    setUser(null);
-    setActiveProject(null);
-    setActiveView('dashboard');
-    localStorage.removeItem('trypta_user');
+    // Since there is no auth page, logout acts as a session reset or no-op
+    // We'll just alert for now as removing the user would break the app (it expects a user)
+    if(window.confirm("Ceci est une version locale sans authentification. Voulez-vous recharger l'application ?")) {
+        window.location.reload();
+    }
   };
 
   const handleCreateProject = (projectData: Partial<Project>) => {
@@ -120,14 +114,11 @@ const App: React.FC = () => {
   const handleImport = (newRefs: Reference[]) => {
     if (!activeProject) return;
     setReferences(prev => [...prev, ...newRefs]);
-    // Note: We do NOT automatically switch view anymore, to allow user to see result/import more
   };
 
-  const handleMergeDuplicates = (idsToMerge: string[]) => {
-    // Keep first, mark others as duplicates
-    const [keepId, ...dupIds] = idsToMerge;
+  const handleMarkAsDuplicates = (idsToMark: string[]) => {
     setReferences(prev => prev.map(ref => {
-      if (dupIds.includes(ref.id)) {
+      if (idsToMark.includes(ref.id)) {
         return { ...ref, status: ReferenceStatus.DUPLICATE };
       }
       return ref;
@@ -182,11 +173,6 @@ const App: React.FC = () => {
 
   // --- Render ---
 
-  // Auth Guard
-  if (!user) {
-    return <AuthView onLogin={handleLogin} />;
-  }
-
   const renderContent = () => {
     switch (activeView) {
       case 'dashboard':
@@ -201,7 +187,7 @@ const App: React.FC = () => {
         );
       case 'duplicates':
         // We pass ALL references to duplicate view, as deduplication should happen on full dataset
-        return <DeduplicateView references={references} onMerge={handleMergeDuplicates} />;
+        return <DeduplicateView references={references} onMarkDuplicates={handleMarkAsDuplicates} />;
       case 'screening':
         return (
           <ScreeningView 

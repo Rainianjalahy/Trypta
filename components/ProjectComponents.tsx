@@ -437,49 +437,140 @@ export const ImportView = ({ onImport, onNavigateNext, projectId }: { onImport: 
   );
 };
 
-export const DeduplicateView = ({ references, onMerge }: { references: Reference[], onMerge: (ids: string[]) => void }) => {
-  // Simple check for duplicate titles (case insensitive)
+export const DeduplicateView = ({ references, onMarkDuplicates }: { references: Reference[], onMarkDuplicates: (ids: string[]) => void }) => {
+  
   const duplicates = useMemo(() => {
-    const groups: {[key: string]: Reference[]} = {};
-    references.forEach(ref => {
-      if (ref.status === ReferenceStatus.INCLUDED || ref.status === ReferenceStatus.IMPORTED) {
-        const key = ref.title.toLowerCase().replace(/[^a-z0-9]/g, '');
-        if (!groups[key]) groups[key] = [];
-        groups[key].push(ref);
+    // Helper: Levenshtein Distance
+    const getLevenshteinDistance = (a: string, b: string) => {
+      if (a.length === 0) return b.length;
+      if (b.length === 0) return a.length;
+      
+      const matrix = [];
+      for (let i = 0; i <= b.length; i++) { matrix[i] = [i]; }
+      for (let j = 0; j <= a.length; j++) { matrix[0][j] = j; }
+      
+      for (let i = 1; i <= b.length; i++) {
+        for (let j = 1; j <= a.length; j++) {
+          if (b.charAt(i - 1) === a.charAt(j - 1)) {
+            matrix[i][j] = matrix[i - 1][j - 1];
+          } else {
+            matrix[i][j] = Math.min(matrix[i - 1][j - 1] + 1, Math.min(matrix[i][j - 1] + 1, matrix[i - 1][j] + 1));
+          }
+        }
       }
-    });
-    return Object.values(groups).filter(g => g.length > 1);
+      return matrix[b.length][a.length];
+    };
+
+    const normalize = (str: string) => str ? str.toLowerCase().replace(/[^a-z0-9]/g, '') : '';
+
+    // Filter relevant references: ignore those already marked as duplicates
+    const candidates = references.filter(r => r.status !== ReferenceStatus.DUPLICATE);
+    
+    const groups: Reference[][] = [];
+    const visited = new Set<string>();
+
+    for (let i = 0; i < candidates.length; i++) {
+      if (visited.has(candidates[i].id)) continue;
+      
+      const group = [candidates[i]];
+      const normTitleA = normalize(candidates[i].title);
+      
+      for (let j = i + 1; j < candidates.length; j++) {
+        if (visited.has(candidates[j].id)) continue;
+        
+        const candidateB = candidates[j];
+        const normTitleB = normalize(candidateB.title);
+        let isDuplicate = false;
+
+        // 1. Check DOI if available (Strongest signal)
+        if (candidates[i].doi && candidateB.doi && candidates[i].doi.toLowerCase() === candidateB.doi.toLowerCase()) {
+          isDuplicate = true;
+        } 
+        // 2. Title Fuzzy Match
+        else if (normTitleA && normTitleB) {
+          // Exact normalized match
+          if (normTitleA === normTitleB) {
+             isDuplicate = true;
+          } 
+          // Levenshtein for typos
+          else if (Math.abs(normTitleA.length - normTitleB.length) < 10) { 
+             // Only run expensive calc if lengths are close
+             const dist = getLevenshteinDistance(normTitleA, normTitleB);
+             const maxLength = Math.max(normTitleA.length, normTitleB.length);
+             const similarity = 1 - (dist / maxLength);
+             
+             // 90% Similarity threshold
+             if (similarity > 0.90) {
+                isDuplicate = true;
+             }
+          }
+        }
+
+        if (isDuplicate) {
+          group.push(candidateB);
+          visited.add(candidateB.id);
+        }
+      }
+
+      if (group.length > 1) {
+        groups.push(group);
+        visited.add(candidates[i].id); // Mark primary as visited too
+      }
+    }
+    
+    return groups;
   }, [references]);
 
   return (
     <div className="space-y-6">
-      <h2 className="text-2xl font-bold text-white">Dédoublonnage</h2>
+      <div className="flex justify-between items-center">
+         <h2 className="text-2xl font-bold text-white">Dédoublonnage Avancé</h2>
+         {duplicates.length > 0 && (
+             <Button variant="primary" onClick={() => onMarkDuplicates(duplicates.flatMap(g => g.slice(1).map(r => r.id)))} className="bg-blue-600 hover:bg-blue-500">
+                <Layers size={18} /> <span>Fusionner tous les groupes ({duplicates.length})</span>
+             </Button>
+         )}
+      </div>
       
       {duplicates.length === 0 ? (
          <div className="flex flex-col items-center justify-center h-64 bg-slate-900/50 rounded-xl border border-slate-800">
            <CheckCircle className="text-emerald-500 mb-3" size={32} />
            <p className="text-slate-300">Aucun doublon détecté.</p>
+           <p className="text-slate-500 text-sm mt-1">L'analyse inclut les titres similaires (>90%) et les DOIs identiques.</p>
          </div>
       ) : (
         <div className="space-y-4">
           <div className="flex items-center space-x-2 text-amber-400 bg-amber-900/10 p-4 rounded-lg border border-amber-900/30">
             <AlertTriangle size={20} />
-            <span>{duplicates.length} groupes de doublons potentiels trouvés.</span>
+            <span>{duplicates.length} groupes de doublons trouvés sur {references.length} références.</span>
           </div>
           
           {duplicates.map((group, idx) => (
-            <Card key={idx} className="space-y-4">
-              <div className="flex justify-between items-start">
-                <h3 className="font-semibold text-white">Groupe #{idx + 1}</h3>
-                <Button variant="primary" onClick={() => onMerge(group.map(r => r.id))} className="text-sm py-1">
-                  Fusionner tout
+            <Card key={idx} className="space-y-4 animate-in fade-in duration-300">
+              <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+                <div className="flex items-center space-x-2">
+                    <span className="bg-slate-800 text-slate-400 px-2 py-1 rounded text-xs font-mono">Groupe #{idx + 1}</span>
+                    <h3 className="font-semibold text-white text-sm">Titres similaires détectés</h3>
+                </div>
+                <Button variant="secondary" onClick={() => onMarkDuplicates(group.slice(1).map(r => r.id))} className="text-xs py-1 h-8">
+                  Fusionner (Garder le 1er)
                 </Button>
               </div>
               <div className="space-y-2">
-                {group.map(ref => (
-                  <div key={ref.id} className="p-3 bg-slate-950 rounded border border-slate-800 text-sm">
-                    <p className="text-slate-200 font-medium">{ref.title}</p>
-                    <p className="text-slate-500 text-xs">{ref.authors} - {ref.year}</p>
+                {group.map((ref, i) => (
+                  <div key={ref.id} className={`p-3 rounded border flex items-start justify-between ${i === 0 ? 'bg-emerald-900/10 border-emerald-500/30' : 'bg-slate-950 border-slate-800'}`}>
+                    <div>
+                        <div className="flex items-center gap-2">
+                             {i === 0 && <span className="text-[10px] font-bold uppercase bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded">Conservé</span>}
+                             <p className={`font-medium text-sm ${i === 0 ? 'text-emerald-100' : 'text-slate-300'}`}>{ref.title}</p>
+                        </div>
+                        <p className="text-slate-500 text-xs mt-1">{ref.authors} • {ref.year} • {ref.journal}</p>
+                        <div className="flex gap-2 mt-1">
+                             <span className="text-[10px] bg-slate-900 text-slate-500 px-1 rounded border border-slate-800">Statut: {ref.status}</span>
+                             {ref.doi && <span className="text-[10px] bg-slate-900 text-slate-500 px-1 rounded border border-slate-800">DOI: {ref.doi}</span>}
+                        </div>
+                    </div>
+                    {i > 0 && <span className="text-xs text-red-400 italic">Sera marqué doublon</span>}
                   </div>
                 ))}
               </div>
@@ -717,37 +808,36 @@ export const ScreeningView = ({ references, onDecision, activeProject, stage = '
 
               <div className="p-4 bg-slate-950 border-t border-slate-800 z-10">
                 <div className="flex justify-center items-center gap-8">
-                    {stage === 'fulltext' && (
-                        <div className="flex items-center gap-4 pr-8 border-r border-slate-800">
-                            <a 
-                                href={getScholarUrl(currentRef.title)} 
-                                target="_blank" 
-                                rel="noopener noreferrer"
-                                className="group flex flex-col items-center gap-1 cursor-pointer"
-                            >
-                                <div className="w-12 h-12 rounded-full border border-slate-700 bg-slate-900 flex items-center justify-center text-blue-400 group-hover:border-blue-500 transition-colors">
-                                    <Search size={20} />
-                                </div>
-                                <span className="text-[10px] font-bold uppercase text-slate-500 group-hover:text-blue-400">Scholar</span>
-                            </a>
-                            
-                            <div className="flex flex-col items-center gap-1 group cursor-pointer" onClick={() => pdfInputRef.current?.click()}>
-                                 <input 
-                                    type="file" 
-                                    ref={pdfInputRef} 
-                                    className="hidden" 
-                                    accept=".pdf" 
-                                    onChange={handlePdfUpload}
-                                />
-                                <div className={`w-12 h-12 rounded-full border border-slate-700 bg-slate-900 flex items-center justify-center transition-colors ${currentRef.pdfFileName ? 'text-emerald-500 border-emerald-500/50' : 'text-slate-400 group-hover:border-slate-500'}`}>
-                                    {currentRef.pdfFileName ? <FileCheck size={20} /> : <Upload size={20} />}
-                                </div>
-                                <span className={`text-[10px] font-bold uppercase ${currentRef.pdfFileName ? 'text-emerald-500' : 'text-slate-500 group-hover:text-slate-300'}`}>
-                                    {currentRef.pdfFileName ? 'PDF OK' : 'PDF'}
-                                </span>
+                    {/* Always visible PDF Upload and Search */}
+                    <div className="flex items-center gap-4 pr-8 border-r border-slate-800">
+                        <a 
+                            href={getScholarUrl(currentRef.title)} 
+                            target="_blank" 
+                            rel="noopener noreferrer"
+                            className="group flex flex-col items-center gap-1 cursor-pointer"
+                        >
+                            <div className="w-12 h-12 rounded-full border border-slate-700 bg-slate-900 flex items-center justify-center text-blue-400 group-hover:border-blue-500 transition-colors">
+                                <Search size={20} />
                             </div>
+                            <span className="text-[10px] font-bold uppercase text-slate-500 group-hover:text-blue-400">Scholar</span>
+                        </a>
+                        
+                        <div className="flex flex-col items-center gap-1 group cursor-pointer" onClick={() => pdfInputRef.current?.click()}>
+                              <input 
+                                type="file" 
+                                ref={pdfInputRef} 
+                                className="hidden" 
+                                accept=".pdf" 
+                                onChange={handlePdfUpload}
+                            />
+                            <div className={`w-12 h-12 rounded-full border border-slate-700 bg-slate-900 flex items-center justify-center transition-colors ${currentRef.pdfFileName ? 'text-emerald-500 border-emerald-500/50' : 'text-slate-400 group-hover:border-slate-500'}`}>
+                                {currentRef.pdfFileName ? <FileCheck size={20} /> : <Upload size={20} />}
+                            </div>
+                            <span className={`text-[10px] font-bold uppercase ${currentRef.pdfFileName ? 'text-emerald-500' : 'text-slate-500 group-hover:text-slate-300'}`}>
+                                {currentRef.pdfFileName ? 'PDF OK' : 'PDF'}
+                            </span>
                         </div>
-                    )}
+                    </div>
 
                     <div className="flex gap-6">
                         <button 
@@ -854,8 +944,7 @@ export const ScreeningView = ({ references, onDecision, activeProject, stage = '
                                {ref.abstract || <span className="text-slate-600 italic">Pas de résumé disponible.</span>}
                                
                                {/* Quick PDF Action in List View */}
-                               {(stage === 'fulltext' || stage === 'title') && (
-                                  <div className="mt-4 pt-4 border-t border-slate-800 flex items-center space-x-6">
+                               <div className="mt-4 pt-4 border-t border-slate-800 flex items-center space-x-6">
                                      <button className="flex items-center space-x-2 text-xs text-blue-400 hover:text-blue-300 transition-colors" onClick={() => window.open(getScholarUrl(ref.title), '_blank')}>
                                          <ExternalLink size={14} /> <span>Google Scholar</span>
                                      </button>
@@ -872,7 +961,6 @@ export const ScreeningView = ({ references, onDecision, activeProject, stage = '
                                          <span className="text-xs text-slate-500 italic truncate max-w-[200px]">{ref.pdfFileName}</span>
                                      )}
                                   </div>
-                               )}
                             </div>
                             <div className="flex gap-2 mt-3 justify-end">
                                <Button variant="danger" className="text-xs py-1.5 px-3 h-8" onClick={() => onDecision(ref.id, Decision.EXCLUDE)}>Exclure</Button>
